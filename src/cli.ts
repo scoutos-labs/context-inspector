@@ -36,12 +36,27 @@ REPORT OPTIONS:
   --no-explanations    Hide judge explanations
 
 EXAMPLES:
+  # Ollama (local) — basic two-file ablation
   context-inspector run \\
-    --memory ~/Code/dottie-weaver/identity/MEMORY.md \\
-    --bridge ~/Code/dottie-weaver/identity/bridge.md \\
+    --memory ~/my-agent/memory.md \\
+    --bridge ~/my-agent/session-state.md \\
     --probe "What should I do next?" \\
-    --scorer both \\
     --out results.json
+
+  # Ollama — granular ablation of a single large file by section
+  context-inspector run \\
+    --split-memory \\
+    --memory ~/my-agent/memory.md \\
+    --probe "What should I do next?" \\
+    --scorer embedding
+
+  # Anthropic API — ad-hoc files, LLM-as-judge only
+  context-inspector run \\
+    --file sys=system-prompt=./system.md \\
+    --file ctx=context=./context.md \\
+    --probe "Summarize the current situation." \\
+    --backend api \\
+    --scorer judge
 
   context-inspector report results.json
 `.trim();

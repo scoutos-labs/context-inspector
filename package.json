@@ -1,10 +1,29 @@
 {
   "name": "context-inspector",
   "version": "0.1.0",
-  "description": "Ablation-based context scoring for agent sessions",
+  "description": "Ablation-based context scoring for AI agents — find out which parts of your prompt context actually drive behavior",
+  "license": "MIT",
+  "author": "Scout OS Labs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/scoutos-labs/context-inspector.git"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "llm",
+    "context",
+    "ablation",
+    "prompt-engineering",
+    "observability",
+    "embeddings"
+  ],
   "scripts": {
     "test": "bun test",
-    "run": "bun src/cli.ts"
+    "start": "bun src/cli.ts"
+  },
+  "bin": {
+    "context-inspector": "src/cli.ts"
   },
   "devDependencies": {
     "@types/bun": "latest"
