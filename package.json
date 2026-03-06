@@ -1,0 +1,12 @@
+{
+  "name": "context-inspector",
+  "version": "0.1.0",
+  "description": "Ablation-based context scoring for agent sessions",
+  "scripts": {
+    "test": "bun test",
+    "run": "bun src/cli.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}
