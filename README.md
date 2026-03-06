@@ -12,7 +12,7 @@ This is useful for:
 - **Debugging**: understanding why an agent made a specific decision
 - **Optimization**: finding context you can cut without behavioral cost
 - **Auditing**: verifying that certain context files are actually influencing the agent
-- **Development**: checking which sections of a large memory or instructions file actually matter
+- **Development**: checking which sections of a large instructions file actually matter
 
 ## How it works
 
@@ -43,12 +43,24 @@ Install [Ollama](https://ollama.com) and pull the models you want to use:
 ollama pull nomic-embed-text
 
 # Completion model (any chat model works — this is the default)
-ollama pull qwen2.5:32b
+ollama pull qwen3:32b
 ```
 
 You can use any Ollama-compatible model. Pass `--model` and `--embed-model` to override the defaults.
 
-### Option B: Anthropic API
+### Option B: OpenAI
+
+Set your API key:
+
+```bash
+export OPENAI_API_KEY=sk-...
+```
+
+Then use `--backend openai`. Default models: `gpt-4o-mini` for completions, `text-embedding-3-small` for embeddings.
+
+This also works with any OpenAI-compatible provider (Together AI, Groq, Mistral, LM Studio, etc.) — set `--api-base-url` to point at the provider's endpoint.
+
+### Option C: Anthropic
 
 Set your API key:
 
@@ -56,7 +68,7 @@ Set your API key:
 export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-Then use `--backend api`. Note: the API backend does not support embeddings, so use `--scorer judge` with it.
+Then use `--backend anthropic`. Note: Anthropic does not expose an embedding endpoint, so use `--scorer judge` when using this backend.
 
 ### Runtime
 
@@ -78,8 +90,8 @@ Run against your own context files:
 
 ```bash
 bun src/cli.ts run \
-  --file sys=system-prompt=./my-system.md \
-  --file mem=memory=./my-memory.md \
+  --file sys=System=./my-system.md \
+  --file mem=Memory=./my-memory.md \
   --probe "What should I do next?" \
   --out results.json
 
@@ -93,7 +105,7 @@ Example output:
   Context Inspector — Ablation Report
 ══════════════════════════════════════════════════════════════════════
   Probe:   What should I do next?
-  Model:   qwen2.5:32b
+  Model:   qwen3:32b
   Scorer:  both
 
   SEGMENT RANKING (most impactful → least)
@@ -123,15 +135,13 @@ context-inspector report [file]
 
 | Flag | Description |
 |------|-------------|
-| `--memory <path>` | Convenience alias: load a file labeled "MEMORY.md" |
-| `--bridge <path>` | Convenience alias: load a file labeled "bridge.md" |
-| `--responsibilities <path>` | Convenience alias: load a file labeled "responsibilities" |
-| `--claude-md <path>` | Convenience alias: load a file labeled "CLAUDE.md" |
+| `--file <id>=<label>=<path>` | Load a file as a named context segment (repeatable) |
+| `--split <id>` | Split this segment by `##` headers for section-level ablation (repeatable) |
 | `--conversation <path>` | JSON file: `{ messages: [{role, content}] }` |
-| `--file <id>=<label>=<path>` | Load any file as a named segment (repeatable) |
-| `--split-memory` | Split the `--memory` file by `##` headers for section-level ablation |
 
-The `--file` flag is the generic way to load any context file. The named flags (`--memory`, `--bridge`, etc.) are convenience shortcuts for common agent context file naming conventions.
+`--file` is the primary input mechanism. Pass any number of files, each with a short identifier, a display label, and a path.
+
+`--split` takes a file id and splits that file into one segment per `##` section instead of treating it as a single block. Useful when a large file has many sections and you want to know which sections matter.
 
 ### Scoring flags
 
@@ -145,10 +155,19 @@ The `--file` flag is the generic way to load any context file. The named flags (
 
 | Flag | Description |
 |------|-------------|
-| `--backend ollama\|api` | LLM backend (default: `ollama`) |
-| `--model <name>` | Completion model (default: `qwen2.5:32b` for Ollama, `claude-haiku-4-5-20251001` for API) |
-| `--embed-model <name>` | Embedding model, Ollama only (default: `nomic-embed-text`) |
+| `--backend ollama\|anthropic\|openai` | LLM backend (default: `ollama`) |
+| `--model <name>` | Completion model override |
+| `--embed-model <name>` | Embedding model override (Ollama and OpenAI) |
 | `--ollama-url <url>` | Ollama base URL (default: `http://localhost:11434`) |
+| `--api-base-url <url>` | Base URL for OpenAI-compatible providers |
+
+Default models by backend:
+
+| Backend | Completion | Embedding |
+|---------|-----------|-----------|
+| `ollama` | `qwen3:32b` | `nomic-embed-text` |
+| `openai` | `gpt-4o-mini` | `text-embedding-3-small` |
+| `anthropic` | `claude-haiku-4-5-20251001` | _(not supported)_ |
 
 ### Output flags
 
@@ -160,26 +179,34 @@ The `--file` flag is the generic way to load any context file. The named flags (
 ## Examples
 
 ```bash
-# Granular ablation of a large memory file (section by section)
+# Granular ablation of a large instructions file (section by section)
 bun src/cli.ts run \
-  --split-memory \
-  --memory ~/my-agent/memory.md \
+  --file mem=Memory=./memory.md \
+  --split mem \
   --probe "What is the current project status?" \
   --scorer embedding
 
-# API backend, judge-only
+# Anthropic backend, judge-only scoring
 bun src/cli.ts run \
-  --file sys=system-prompt=./system.md \
-  --file ctx=context=./context.md \
+  --file sys=System=./system.md \
+  --file ctx=Context=./context.md \
   --probe "What should I do next?" \
-  --backend api \
+  --backend anthropic \
   --scorer judge
 
-# Multiple files with a custom Ollama instance
+# OpenAI-compatible local server (LM Studio, vLLM, etc.)
 bun src/cli.ts run \
-  --file a=instructions=./instructions.md \
-  --file b=session=./session.md \
-  --file c=tools=./tools.md \
+  --file sys=System=./system.md \
+  --file ctx=Context=./context.md \
+  --probe "What should I do next?" \
+  --backend openai \
+  --api-base-url http://localhost:1234/v1
+
+# Multiple files with a custom Ollama instance and model
+bun src/cli.ts run \
+  --file a=Instructions=./instructions.md \
+  --file b=Session=./session.md \
+  --file c=Tools=./tools.md \
   --probe "How do I handle this situation?" \
   --ollama-url http://my-ollama-host:11434 \
   --model llama3.1:70b \

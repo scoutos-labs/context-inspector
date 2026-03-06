@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { runAblation, OllamaBackend, AnthropicBackend } from "../src/engine.ts";
+import { runAblation, OllamaBackend, AnthropicBackend, OpenAIBackend } from "../src/engine.ts";
 import { parseAgentContext, splitByH2 } from "../src/parser.ts";
 import type { LLMBackend, Segment, RunConfig } from "../src/types.ts";
 
@@ -217,14 +217,24 @@ describe("parseAgentContext", () => {
     expect(() => parseAgentContext({})).toThrow("No context files provided");
   });
 
-  it("reads and returns extra files", async () => {
+  it("reads and returns files", async () => {
     // Write a temp file
     const tmp = `/tmp/ctx-inspector-test-${Date.now()}.md`;
     await Bun.write(tmp, "# Hello\nThis is test content.");
-    const segments = parseAgentContext({ extraFiles: [{ id: "test", label: "Test", path: tmp }] });
+    const segments = parseAgentContext({ files: [{ id: "test", label: "Test", path: tmp }] });
     expect(segments.length).toBe(1);
     expect(segments[0].id).toBe("test");
     expect(segments[0].content).toContain("test content");
+  });
+
+  it("splits a file by H2 when split=true", async () => {
+    const tmp = `/tmp/ctx-inspector-split-test-${Date.now()}.md`;
+    await Bun.write(tmp, "## Section One\n\nContent one.\n\n## Section Two\n\nContent two.");
+    const segments = parseAgentContext({
+      files: [{ id: "mem", label: "Memory", path: tmp, split: true }],
+    });
+    expect(segments.length).toBe(2);
+    expect(segments[0].id.startsWith("mem__")).toBe(true);
   });
 });
 

@@ -93,8 +93,60 @@ export class AnthropicBackend implements LLMBackend {
   }
 
   async embed(_text: string): Promise<number[]> {
-    // Anthropic doesn't expose an embedding endpoint — caller should not use this
-    throw new Error("AnthropicBackend does not support embeddings. Use scorer='judge' with API backend.");
+    // Anthropic doesn't expose an embedding endpoint
+    throw new Error("AnthropicBackend does not support embeddings. Use --scorer judge with --backend anthropic.");
+  }
+}
+
+// OpenAI backend — also works with any OpenAI-compatible provider
+// (Together AI, Mistral, Groq, local servers like LM Studio, etc.)
+// Set --api-base-url to override the endpoint.
+export class OpenAIBackend implements LLMBackend {
+  private baseUrl: string;
+  private apiKey: string;
+  private model: string;
+  private embedModel: string;
+
+  constructor(opts: { baseUrl?: string; apiKey: string; model?: string; embedModel?: string }) {
+    this.baseUrl = (opts.baseUrl ?? "https://api.openai.com/v1").replace(/\/$/, "");
+    this.apiKey = opts.apiKey;
+    this.model = opts.model ?? "gpt-4o-mini";
+    this.embedModel = opts.embedModel ?? "text-embedding-3-small";
+  }
+
+  async complete(system: string, prompt: string): Promise<string> {
+    const res = await fetch(`${this.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${this.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: this.model,
+        temperature: 0,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: prompt },
+        ],
+      }),
+    });
+    if (!res.ok) throw new Error(`OpenAI complete failed: ${res.status} ${await res.text()}`);
+    const data = await res.json() as { choices: Array<{ message: { content: string } }> };
+    return data.choices[0].message.content.trim();
+  }
+
+  async embed(text: string): Promise<number[]> {
+    const res = await fetch(`${this.baseUrl}/embeddings`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${this.apiKey}`,
+      },
+      body: JSON.stringify({ model: this.embedModel, input: text }),
+    });
+    if (!res.ok) throw new Error(`OpenAI embed failed: ${res.status} ${await res.text()}`);
+    const data = await res.json() as { data: Array<{ embedding: number[] }> };
+    return data.data[0].embedding;
   }
 }
 
@@ -248,7 +300,7 @@ export async function runAblation(
 
   return {
     probePrompt,
-    model: config.model ?? "qwen3:32b",
+    model: config.model ?? "(default)",
     scorer,
     originalResponse,
     results,
@@ -267,7 +319,20 @@ export function createBackend(config: RunConfig): LLMBackend {
       embedModel: config.embedModel,
     });
   }
+
+  if (config.backend === "openai") {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) throw new Error("OPENAI_API_KEY environment variable not set");
+    return new OpenAIBackend({
+      baseUrl: config.apiBaseUrl,
+      apiKey,
+      model: config.model,
+      embedModel: config.embedModel,
+    });
+  }
+
+  // anthropic
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error("ANTHROPIC_API_KEY not set");
+  if (!apiKey) throw new Error("ANTHROPIC_API_KEY environment variable not set");
   return new AnthropicBackend({ apiKey, model: config.model });
 }

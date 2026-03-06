@@ -1,7 +1,7 @@
 // Shared interfaces for Context Inspector
 
 export interface Segment {
-  id: string;    // e.g. "memory", "bridge", "responsibilities"
+  id: string;    // e.g. "memory", "bridge", "system-prompt"
   label: string; // display name
   content: string;
 }
@@ -20,12 +20,13 @@ export interface AblationResult {
 export interface RunConfig {
   segments: Segment[];
   probePrompt: string;
-  backend: "ollama" | "api";
+  backend: "ollama" | "anthropic" | "openai";
   model?: string;          // completion model
-  embedModel?: string;     // embedding model (Ollama only)
+  embedModel?: string;     // embedding model (Ollama or OpenAI)
   scorer: "embedding" | "judge" | "both";
   judgeTopN: number;       // only run judge on top N segments by embedding score
   ollamaBaseUrl?: string;  // defaults to http://localhost:11434
+  apiBaseUrl?: string;     // base URL for OpenAI-compatible providers
 }
 
 export interface RunResult {

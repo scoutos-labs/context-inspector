@@ -1,13 +1,16 @@
 import { readFileSync } from "fs";
 import type { Segment } from "./types.ts";
 
+export interface FileSpec {
+  id: string;
+  label: string;
+  path: string;
+  split?: boolean; // if true, split by H2 headers instead of treating as a single segment
+}
+
 export interface ParseOptions {
-  memoryPath?: string;
-  bridgePath?: string;
-  responsibilitiesPath?: string;
-  claudeMdPath?: string;
-  conversationPath?: string;    // JSON file with {messages: [{role, content}]}
-  extraFiles?: Array<{ id: string; label: string; path: string }>;
+  files?: FileSpec[];
+  conversationPath?: string; // JSON file with {messages: [{role, content}]}
 }
 
 function readFile(path: string): string {
@@ -21,36 +24,13 @@ function readFile(path: string): string {
 export function parseAgentContext(opts: ParseOptions): Segment[] {
   const segments: Segment[] = [];
 
-  if (opts.memoryPath) {
-    segments.push({
-      id: "memory",
-      label: "MEMORY.md",
-      content: readFile(opts.memoryPath),
-    });
-  }
-
-  if (opts.bridgePath) {
-    segments.push({
-      id: "bridge",
-      label: "bridge.md",
-      content: readFile(opts.bridgePath),
-    });
-  }
-
-  if (opts.responsibilitiesPath) {
-    segments.push({
-      id: "responsibilities",
-      label: "responsibilities",
-      content: readFile(opts.responsibilitiesPath),
-    });
-  }
-
-  if (opts.claudeMdPath) {
-    segments.push({
-      id: "claude_md",
-      label: "CLAUDE.md",
-      content: readFile(opts.claudeMdPath),
-    });
+  for (const file of opts.files ?? []) {
+    const content = readFile(file.path);
+    if (file.split) {
+      segments.push(...splitByH2(content, file.id, file.label));
+    } else {
+      segments.push({ id: file.id, label: file.label, content });
+    }
   }
 
   if (opts.conversationPath) {
@@ -66,23 +46,16 @@ export function parseAgentContext(opts: ParseOptions): Segment[] {
     });
   }
 
-  for (const extra of opts.extraFiles ?? []) {
-    segments.push({
-      id: extra.id,
-      label: extra.label,
-      content: readFile(extra.path),
-    });
-  }
-
   if (segments.length === 0) {
-    throw new Error("No context files provided. Use --memory, --bridge, etc.");
+    throw new Error("No context files provided. Use --file id=label=path.");
   }
 
   return segments;
 }
 
-// Split a single large file by markdown H2 headers (## Section Name)
-export function splitByH2(content: string, fileId: string): Segment[] {
+// Split a single file by markdown H2 headers (## Section Name).
+// Each section becomes its own segment for granular ablation.
+export function splitByH2(content: string, fileId: string, fileLabel?: string): Segment[] {
   const lines = content.split("\n");
   const segments: Segment[] = [];
   let currentLabel = "preamble";
@@ -92,9 +65,10 @@ export function splitByH2(content: string, fileId: string): Segment[] {
     const h2Match = line.match(/^##\s+(.+)/);
     if (h2Match) {
       if (currentLines.length > 0) {
+        const prefix = fileLabel ?? fileId;
         segments.push({
           id: `${fileId}__${currentLabel.toLowerCase().replace(/\s+/g, "_")}`,
-          label: `${fileId}: ${currentLabel}`,
+          label: `${prefix}: ${currentLabel}`,
           content: currentLines.join("\n").trim(),
         });
       }
@@ -106,9 +80,10 @@ export function splitByH2(content: string, fileId: string): Segment[] {
   }
 
   if (currentLines.length > 0) {
+    const prefix = fileLabel ?? fileId;
     segments.push({
       id: `${fileId}__${currentLabel.toLowerCase().replace(/\s+/g, "_")}`,
-      label: `${fileId}: ${currentLabel}`,
+      label: `${prefix}: ${currentLabel}`,
       content: currentLines.join("\n").trim(),
     });
   }

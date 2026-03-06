@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { writeFileSync, readFileSync } from "fs";
 import { runAblation, createBackend } from "./engine.ts";
-import { parseAgentContext, splitByH2 } from "./parser.ts";
+import { parseAgentContext } from "./parser.ts";
 import type { RunConfig, RunResult, AblationResult } from "./types.ts";
 
 // ─── Help ─────────────────────────────────────────────────────────────────────
@@ -14,49 +14,65 @@ COMMANDS:
   report    Pretty-print results from a run output file
 
 RUN OPTIONS:
-  --memory <path>      Path to MEMORY.md
-  --bridge <path>      Path to bridge.md
-  --responsibilities <path>  Path to responsibilities file
-  --claude-md <path>   Path to CLAUDE.md
-  --conversation <path> Path to conversation JSON {messages:[{role,content}]}
-  --file <id>=<label>=<path>  Extra file segment (repeatable)
-  --split-memory       Split MEMORY.md by H2 headers (granular ablation)
-  --probe <text>       Probe prompt to run against the context
-  --backend <ollama|api>  LLM backend (default: ollama)
-  --model <name>       Completion model (default: qwen3:32b)
-  --embed-model <name> Embedding model (default: nomic-embed-text)
+  --file <id>=<label>=<path>   Add a file as a context segment (repeatable)
+  --split <id>                 Split this segment's file by ## H2 headers
+                               for granular section-level ablation (repeatable)
+  --conversation <path>        Add a conversation JSON as a segment
+                               Format: {messages: [{role, content}]}
+  --probe <text>               Probe prompt to run against the context
+  --backend <ollama|anthropic|openai>  LLM backend (default: ollama)
+  --model <name>               Completion model
+                               Defaults: ollama=qwen3:32b, openai=gpt-4o-mini,
+                                         anthropic=claude-haiku-4-5-20251001
+  --embed-model <name>         Embedding model
+                               Defaults: ollama=nomic-embed-text,
+                                         openai=text-embedding-3-small
   --scorer <embedding|judge|both>  Scoring strategy (default: both)
-  --judge-top-n <n>    Run judge on top N segments only (default: 3)
-  --ollama-url <url>   Ollama base URL (default: http://localhost:11434)
-  --out <path>         Output file for JSON results (default: results.json)
-  --quiet              Suppress progress logs
+  --judge-top-n <n>            Run judge on top N segments only (default: 3)
+  --ollama-url <url>           Ollama base URL (default: http://localhost:11434)
+  --api-base-url <url>         Base URL for OpenAI-compatible providers
+                               (e.g. http://localhost:1234/v1 for LM Studio)
+  --out <path>                 Output file for JSON results (default: results.json)
+  --quiet                      Suppress progress logs
+
+ENVIRONMENT VARIABLES:
+  ANTHROPIC_API_KEY            Required when --backend anthropic
+  OPENAI_API_KEY               Required when --backend openai
 
 REPORT OPTIONS:
   <file>               Path to results JSON (default: results.json)
   --no-explanations    Hide judge explanations
 
 EXAMPLES:
-  # Ollama (local) — basic two-file ablation
+  # Ollama (local) — two files
   context-inspector run \\
-    --memory ~/my-agent/memory.md \\
-    --bridge ~/my-agent/session-state.md \\
+    --file sys=System=./system-prompt.md \\
+    --file ctx=Context=./context.md \\
     --probe "What should I do next?" \\
     --out results.json
 
-  # Ollama — granular ablation of a single large file by section
+  # Ollama — granular ablation: split a large file by section
   context-inspector run \\
-    --split-memory \\
-    --memory ~/my-agent/memory.md \\
+    --file memory=Memory=./memory.md \\
+    --split memory \\
     --probe "What should I do next?" \\
     --scorer embedding
 
-  # Anthropic API — ad-hoc files, LLM-as-judge only
+  # OpenAI — three files, judge-only scoring
   context-inspector run \\
-    --file sys=system-prompt=./system.md \\
-    --file ctx=context=./context.md \\
+    --file sys=System=./system.md \\
+    --file rules=Rules=./rules.md \\
+    --file ctx=Context=./context.md \\
     --probe "Summarize the current situation." \\
-    --backend api \\
+    --backend openai \\
     --scorer judge
+
+  # OpenAI-compatible local server (LM Studio, Ollama OpenAI API, etc.)
+  context-inspector run \\
+    --file sys=System=./system.md \\
+    --probe "What's the plan?" \\
+    --backend openai \\
+    --api-base-url http://localhost:1234/v1
 
   context-inspector report results.json
 `.trim();
@@ -65,6 +81,7 @@ EXAMPLES:
 
 function parseArgs(argv: string[]): Record<string, string | string[] | boolean> {
   const args: Record<string, string | string[] | boolean> = {};
+  const MULTI_FLAGS = new Set(["file", "split"]);
   let i = 0;
   while (i < argv.length) {
     const arg = argv[i];
@@ -74,16 +91,12 @@ function parseArgs(argv: string[]): Record<string, string | string[] | boolean> 
       if (!next || next.startsWith("--")) {
         args[key] = true;
         i++;
+      } else if (MULTI_FLAGS.has(key)) {
+        const existing = args[key];
+        args[key] = [...(Array.isArray(existing) ? existing : []), next];
+        i += 2;
       } else {
-        if (key === "file") {
-          const existing = args["file"];
-          args["file"] = [
-            ...(Array.isArray(existing) ? existing : []),
-            next,
-          ];
-        } else {
-          args[key] = next;
-        }
+        args[key] = next;
         i += 2;
       }
     } else {
@@ -159,41 +172,38 @@ async function cmdRun(argv: string[]): Promise<void> {
     process.exit(1);
   }
 
-  // Parse context files into segments
-  const splitMemory = args["split-memory"] === true;
-  const memoryPath = args["memory"] as string | undefined;
-  const extraFiles = (args["file"] as string[] | undefined)?.map((spec) => {
+  // Parse --file specs
+  const splitIds = new Set(
+    (args["split"] as string[] | undefined) ?? [],
+  );
+
+  const fileSpecs = ((args["file"] as string[] | undefined) ?? []).map((spec) => {
     const parts = spec.split("=");
     if (parts.length < 3) {
-      console.error(`Invalid --file spec: ${spec}. Use: id=label=path`);
+      console.error(`Invalid --file spec: "${spec}". Expected: id=label=path`);
       process.exit(1);
     }
-    return { id: parts[0], label: parts[1], path: parts.slice(2).join("=") };
+    const id = parts[0];
+    return {
+      id,
+      label: parts[1],
+      path: parts.slice(2).join("="),
+      split: splitIds.has(id),
+    };
   });
 
-  const segments = (() => {
-    if (splitMemory && memoryPath) {
-      const content = readFileSync(memoryPath, "utf-8");
-      return [
-        ...splitByH2(content, "memory"),
-        ...parseAgentContext({
-          bridgePath: args["bridge"] as string | undefined,
-          responsibilitiesPath: args["responsibilities"] as string | undefined,
-          claudeMdPath: args["claude-md"] as string | undefined,
-          conversationPath: args["conversation"] as string | undefined,
-          extraFiles,
-        }),
-      ];
+  // Validate --split references a known file id
+  for (const id of splitIds) {
+    if (!fileSpecs.some((f) => f.id === id)) {
+      console.error(`Error: --split "${id}" does not match any --file id`);
+      process.exit(1);
     }
-    return parseAgentContext({
-      memoryPath,
-      bridgePath: args["bridge"] as string | undefined,
-      responsibilitiesPath: args["responsibilities"] as string | undefined,
-      claudeMdPath: args["claude-md"] as string | undefined,
-      conversationPath: args["conversation"] as string | undefined,
-      extraFiles,
-    });
-  })();
+  }
+
+  const segments = parseAgentContext({
+    files: fileSpecs,
+    conversationPath: args["conversation"] as string | undefined,
+  });
 
   const scorer = (args["scorer"] as string | undefined) ?? "both";
   if (!["embedding", "judge", "both"].includes(scorer)) {
@@ -201,23 +211,30 @@ async function cmdRun(argv: string[]): Promise<void> {
     process.exit(1);
   }
 
+  const backend = (args["backend"] as string | undefined) ?? "ollama";
+  if (!["ollama", "anthropic", "openai"].includes(backend)) {
+    console.error(`Invalid --backend: ${backend}. Use: ollama | anthropic | openai`);
+    process.exit(1);
+  }
+
   const config: RunConfig = {
     segments,
     probePrompt: probe,
-    backend: (args["backend"] as "ollama" | "api" | undefined) ?? "ollama",
-    model: (args["model"] as string | undefined) ?? "qwen3:32b",
-    embedModel: (args["embed-model"] as string | undefined) ?? "nomic-embed-text",
+    backend: backend as "ollama" | "anthropic" | "openai",
+    model: args["model"] as string | undefined,
+    embedModel: args["embed-model"] as string | undefined,
     scorer: scorer as "embedding" | "judge" | "both",
     judgeTopN: parseInt((args["judge-top-n"] as string | undefined) ?? "3", 10),
     ollamaBaseUrl: args["ollama-url"] as string | undefined,
+    apiBaseUrl: args["api-base-url"] as string | undefined,
   };
 
   const quiet = args["quiet"] === true;
   const onProgress = quiet ? undefined : (msg: string) => console.log(msg);
 
   console.log(`Running ablation on ${segments.length} segments...`);
-  const backend = createBackend(config);
-  const result = await runAblation(config, backend, onProgress);
+  const backendInstance = createBackend(config);
+  const result = await runAblation(config, backendInstance, onProgress);
 
   const outPath = (args["out"] as string | undefined) ?? "results.json";
   writeFileSync(outPath, JSON.stringify(result, null, 2));
